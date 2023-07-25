@@ -64,6 +64,13 @@ int32_t ODriveArduino::readInt() {
     return readString().toInt();
 }
 
+//add
+int32_t ODriveArduino::GetParameter(int motor_number, ParamNamesInt32 parameter) {
+    int idx = kMotorOffsetInt32 + kMotorStrideInt32 * motor_number + parameter;
+    serial_ << "$g 1 " << idx << "!";
+    return readString().toInt();
+}
+
 bool ODriveArduino::run_state(int axis, int requested_state, bool wait) {
     int timeout_ctr = 100;
     serial_ << "w axis" << axis << ".requested_state " << requested_state << '\n';

@@ -17,10 +17,23 @@ public:
         AXIS_STATE_ENCODER_OFFSET_CALIBRATION = 7, //<! run encoder offset calibration
         AXIS_STATE_CLOSED_LOOP_CONTROL = 8  //<! run closed loop control
     };
+    
+    //aggiunta io
+    enum ParamNamesInt32 {
+        PARAM_INT_CONTROL_MODE,
+        PARAM_INT_ENCODER_ENCODER_OFFSET,
+        PARAM_INT_ENCODER_ENCODER_STATE,
+        PARAM_INT_ERROR,
+    };
 
     ODriveArduino(Stream& serial);
 
     // Commands
+
+    //add 
+    int32_t  GetParameter(int motor_number, ParamNamesInt32 parameter);
+
+    //default
     void SetPosition(int motor_number, float position);
     void SetPosition(int motor_number, float position, float velocity_feedforward);
     void SetPosition(int motor_number, float position, float velocity_feedforward, float current_feedforward);
