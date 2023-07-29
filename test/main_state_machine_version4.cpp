@@ -1,4 +1,5 @@
 //MAIN with state_machine 
+//MAIN with state_machine 
 #include <Arduino.h>
 #include <micro_ros_arduino.h>
 
@@ -11,10 +12,10 @@
 
 #include <std_msgs/msg/float32.h>
 #include <geometry_msgs/msg/twist.h>
-#include <sensor_msgs/msg/imu.h>
 #include <nav_msgs/msg/odometry.h>
 #include <micro_ros_utilities/type_utilities.h>
 #include <micro_ros_utilities/string_utilities.h>
+#include <example_interfaces/srv/add_two_ints.h>
 #include <example_interfaces/srv/set_bool.h>
 
 //for Odrive communication
@@ -53,25 +54,26 @@ bool restartFlag = false;
 rcl_subscription_t subscriber;
 geometry_msgs__msg__Twist msg;
 
-//PUBLISHER R wheel
+//PUBLISHER R
 rcl_publisher_t publisher_l;
 std_msgs__msg__Float32 wheel_l;
 
-//PUBLISHER L wheel
+//PUBLISHER L
 rcl_publisher_t publisher_r;
 std_msgs__msg__Float32 wheel_r;
-
-//PUBLISHER imu
-rcl_publisher_t publisher_imu;
-sensor_msgs__msg__Imu imu;
 
 //services values
 rcl_service_t service_restart;
 
-
-
 example_interfaces__srv__SetBool_Request req;
 example_interfaces__srv__SetBool_Response res;
+
+
+//service getOdriveMode values
+rcl_service_t service_getModeOdrive;
+
+example_interfaces__srv__AddTwoInts_Request req_mode;
+example_interfaces__srv__AddTwoInts_Response res_mode;
 
 // Printing with stream operator helper functions
 template<class T> inline Print& operator <<(Print& obj, T arg) { obj.print(arg);    return obj; }
@@ -91,66 +93,16 @@ enum states {
   AGENT_DISCONNECTED
 } state;
 
-//
-//void timer_callback(rcl_timer_t * timer, int64_t last_call_time)
-//{
-//  (void) last_call_time;
-//  if (timer != NULL) {
-//    wheel_l.data = -1*odrive.GetPosition(1);//(int16_t)odrive.GetPosition(1);
-//    wheel_r.data = 1*odrive.GetPosition(0);//(int16_t)odrive.GetPosition(0);
-//    
-//    rcl_publish(&publisher_l,&wheel_l, NULL);
-//    rcl_publish(&publisher_r,&wheel_r, NULL);
-//  }
-//}
-
-
-//function to convert euler to quaternion
-const void euler_to_quat(float x, float y, float z, double* q) {
-    float c1 = cos((y*3.14/180.0)/2);
-    float c2 = cos((z*3.14/180.0)/2);
-    float c3 = cos((x*3.14/180.0)/2);
-
-    float s1 = sin((y*3.14/180.0)/2);
-    float s2 = sin((z*3.14/180.0)/2);
-    float s3 = sin((x*3.14/180.0)/2);
-
-    q[0] = c1 * c2 * c3 - s1 * s2 * s3;
-    q[1] = s1 * s2 * c3 + c1 * c2 * s3;
-    q[2] = s1 * c2 * c3 + c1 * s2 * s3;
-    q[3] = c1 * s2 * c3 - s1 * c2 * s3;
-}
-
-
-void publishImu(){
-  double q[4];
-
-  sensors_event_t a, g, temp;
-  mpu.getEvent(&a, &g, &temp);
-
-  euler_to_quat(g.gyro.x, g.gyro.y, g.gyro.z, q);
-
-  imu.header.frame_id.size = 3;
-  imu.header.frame_id.capacity = 4;
-  imu.header.frame_id.data = "imu";
+void timer_callback(rcl_timer_t * timer, int64_t last_call_time)
+{
+  (void) last_call_time;
+  if (timer != NULL) {
+    wheel_l.data = -1*odrive.GetPosition(1);//(int16_t)odrive.GetPosition(1);
+    wheel_r.data = 1*odrive.GetPosition(0);//(int16_t)odrive.GetPosition(0);
     
-  //imu.header.stamp.sec = rmw_uros_epoch_nanos();;
-  //imu.header.stamp.nanosec = rmw_uros_epoch_millis();;
-
-  imu.orientation.w = q[1];
-  imu.orientation.w = q[2];
-  imu.orientation.w = q[3];
-  imu.orientation.w = q[0];
-
-  imu.angular_velocity.x = g.gyro.x;
-  imu.angular_velocity.y = g.gyro.y;
-  imu.angular_velocity.z = g.gyro.z;
-
-  imu.linear_acceleration.x = a.acceleration.x;
-  imu.linear_acceleration.y = a.acceleration.y;
-  imu.linear_acceleration.z = a.acceleration.z;
-
-  rcl_publish(&publisher_imu, &imu , NULL);
+    rcl_publish(&publisher_l,&wheel_l, NULL);
+    rcl_publish(&publisher_r,&wheel_r, NULL);
+  }
 }
 
 
@@ -165,6 +117,7 @@ void publishPosition(){
 
 }
 
+//function to active closed loop control Odrive
 void activeOdrive(){
   // Setup ODrive
   Serial2.begin(115200, SERIAL_8N1, 16, 17);
@@ -178,8 +131,8 @@ void activeOdrive(){
 
 
 //function to check current mode in Odrive
-bool checkOdriveMode(){
-  float getMode = odrive.GetParameter(0,ODriveArduino::PARAM_INT_CONTROL_MODE);
+int32_t checkOdriveMode(){
+  return odrive.GetParameter(0,ODriveArduino::PARAM_INT_CONTROL_MODE);
 }
 
 
@@ -203,6 +156,15 @@ void subscription_callback(const void *msgin) {
 }
 
 
+//callback for service that restart Odrive
+void getOdriveMode_callback(const void * req, void * res){
+  example_interfaces__srv__AddTwoInts_Request * req_in = (example_interfaces__srv__AddTwoInts_Request *) req;
+  example_interfaces__srv__AddTwoInts_Response * res_in = (example_interfaces__srv__AddTwoInts_Response *) res;
+
+  res_in->sum = checkOdriveMode(); 
+}
+
+
 //callback for service that restart esp32
 void service_callback(const void * req, void * res){
   example_interfaces__srv__SetBool_Request * req_in = (example_interfaces__srv__SetBool_Request *) req;
@@ -213,14 +175,13 @@ void service_callback(const void * req, void * res){
     
     res_in->success = true;
     
-    //TO DO (make responso works)
     res_in->message.size = 20;
     res_in->message.capacity = 21;
     char * status = "Riavvio in corso....";
     res_in->message.data = status;
 
     restartFlag = true;
-    //restartESP();
+    
   }
 }
 
@@ -240,7 +201,7 @@ bool create_entities()
   // create node
   RCCHECK(rclc_node_init_default(&node, "micro_ros_arduino_node", "", &support));
 
-  // create subscriber cmd vel
+  // create subscriber
   RCCHECK(rclc_subscription_init_default(
     &subscriber,
     &node,
@@ -249,47 +210,47 @@ bool create_entities()
 
   //create publisher left wheel
   RCCHECK(rclc_publisher_init_default(
-    &publisher_l,
-    &node,
-    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
-    "lwheel"));
+  &publisher_l,
+  &node,
+  ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
+  "lwheel"));
 
   //create publisher right wheel
-    RCCHECK(rclc_publisher_init_default(
-    &publisher_r,
-    &node,
-    ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
-    "rwheel"));
-
-  // create publisher imu
   RCCHECK(rclc_publisher_init_default(
-    &publisher_imu,
-    &node,
-    ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
-    "/imu"));
+  &publisher_r,
+  &node,
+  ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
+  "rwheel"));
 
   // create timer,
-  //const unsigned int timer_timeout = 1000;
-  //RCCHECK(rclc_timer_init_default(
-  //  &timer,
-  //  &support,
-  //  RCL_MS_TO_NS(timer_timeout),
-  //  timer_callback));
+  const unsigned int timer_timeout = 1000;
+  RCCHECK(rclc_timer_init_default(
+    &timer,
+    &support,
+    RCL_MS_TO_NS(timer_timeout),
+    timer_callback));
 
-  // create service
+  // create service restartESP
   RCCHECK(rclc_service_init_default(&service_restart, &node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, SetBool), "/restartESP"));
+
+  // create service getModeOdrive
+  //RCCHECK(rclc_service_init_default(&service_getModeOdrive, &node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, AddTwoInts), "/getModeOdrive"));
+
 
   // create executor
   executor = rclc_executor_get_zero_initialized_executor();
-  RCCHECK(rclc_executor_init(&executor, &support.context, 4, &allocator));
+  RCCHECK(rclc_executor_init(&executor, &support.context, 5, &allocator));
   //RCCHECK(rclc_executor_add_timer(&executor, &timer));
   
 
   //add subscriber
   RCCHECK(rclc_executor_add_subscription(&executor, &subscriber, &msg, &subscription_callback, ON_NEW_DATA));
 
-  //add service
+  //add service restartESP
   RCCHECK(rclc_executor_add_service(&executor, &service_restart, &req, &res, service_callback));
+
+  //add service getModeOdrive
+  //RCCHECK(rclc_executor_add_service(&executor, &service_getModeOdrive, &req_mode, &res_mode, getOdriveMode_callback));
 
   return true;
 }
@@ -302,9 +263,9 @@ void destroy_entities()
 
   rcl_publisher_fini(&publisher_l, &node);
   rcl_publisher_fini(&publisher_r, &node);
-  rcl_publisher_fini(&publisher_imu, &node);
   rcl_subscription_fini(&subscriber,&node);
   rcl_service_fini(&service_restart,&node);
+  //rcl_service_fini(&service_getModeOdrive,&node);
   //rcl_timer_fini(&timer);
   rclc_executor_fini(&executor);
   rcl_node_fini(&node);
@@ -313,17 +274,10 @@ void destroy_entities()
 
 void setup() {
   set_microros_transports();
-  //pinMode(LED_PIN, OUTPUT);
+  
   //activeOdrive();
   state = WAITING_AGENT;
 
-
-  //setup for mpu6050
-  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-
-  mpu.begin();
 }
 
 void loop() {
@@ -355,7 +309,6 @@ void loop() {
 
   if (state == AGENT_CONNECTED) {
     publishPosition();
-    publishImu();
 
     if(restartFlag){
       ESP.restart();

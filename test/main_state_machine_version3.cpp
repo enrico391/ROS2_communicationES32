@@ -1,3 +1,4 @@
+//MAIN with state_machine 
 #include <Arduino.h>
 #include <micro_ros_arduino.h>
 
@@ -43,6 +44,9 @@ bool micro_ros_init_successful;
 float vel_motor0_linear;
 float vel_motor1_linear;
 
+bool restartFlag = false;
+
+
 
 //SUBSCRIBER
 rcl_subscription_t subscriber;
@@ -55,6 +59,15 @@ std_msgs__msg__Float32 wheel_l;
 //PUBLISHER L
 rcl_publisher_t publisher_r;
 std_msgs__msg__Float32 wheel_r;
+
+//services values
+rcl_service_t service_restart;
+
+//services values
+rcl_service_t service_restart;
+
+example_interfaces__srv__SetBool_Request req;
+example_interfaces__srv__SetBool_Response res;
 
 // Printing with stream operator helper functions
 template<class T> inline Print& operator <<(Print& obj, T arg) { obj.print(arg);    return obj; }
@@ -87,6 +100,35 @@ void timer_callback(rcl_timer_t * timer, int64_t last_call_time)
 }
 
 
+//function 
+void publishPosition(){
+  
+  wheel_l.data = -1*odrive.GetPosition(1);//(int16_t)odrive.GetPosition(1);
+  wheel_r.data = 1*odrive.GetPosition(0);//(int16_t)odrive.GetPosition(0);
+
+  rcl_publish(&publisher_l,&wheel_l, NULL);
+  rcl_publish(&publisher_r,&wheel_r, NULL);
+
+}
+
+void activeOdrive(){
+  // Setup ODrive
+  Serial2.begin(115200, SERIAL_8N1, 16, 17);
+
+  int requested_state;
+  requested_state = ODriveArduino::AXIS_STATE_CLOSED_LOOP_CONTROL;
+  
+  odrive.run_state(1, requested_state, false); // don't wait 
+  odrive.run_state(0, requested_state, false); // don't wait 
+}
+
+
+//function to check current mode in Odrive
+bool checkOdriveMode(){
+  float getMode = odrive.GetParameter(0,ODriveArduino::PARAM_INT_CONTROL_MODE);
+}
+
+
 //CALLBACK FOR SUBSCRIBE NODE
 void subscription_callback(const void *msgin) {
   const geometry_msgs__msg__Twist * msg = (const geometry_msgs__msg__Twist *)msgin;
@@ -106,16 +148,27 @@ void subscription_callback(const void *msgin) {
 
 }
 
-//function 
-// void publishPosition(){
-  
-//   wheel_l.data = -1*odrive.GetPosition(1);//(int16_t)odrive.GetPosition(1);
-//   wheel_r.data = 1*odrive.GetPosition(0);//(int16_t)odrive.GetPosition(0);
 
-//   RCCHECK(rcl_publish(&publisher_l,&wheel_l, NULL));
-//   RCCHECK(rcl_publish(&publisher_r,&wheel_r, NULL));
+//callback for service that restart esp32
+void service_callback(const void * req, void * res){
+  example_interfaces__srv__SetBool_Request * req_in = (example_interfaces__srv__SetBool_Request *) req;
+  example_interfaces__srv__SetBool_Response * res_in = (example_interfaces__srv__SetBool_Response *) res;
 
-// }
+  //printf("");
+  if(req_in->data){
+    
+    res_in->success = true;
+    
+    //TO DO (make responso works)
+    res_in->message.size = 20;
+    res_in->message.capacity = 21;
+    char * status = "Riavvio in corso....";
+    res_in->message.data = status;
+
+    restartFlag = true;
+    //restartESP();
+  }
+}
 
 
 // Functions create_entities and destroy_entities can take several seconds.
@@ -140,16 +193,14 @@ bool create_entities()
     ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
     "/cmd_vel"));
 
-  
-  //init publisher left wheel
+  //create publisher left wheel
   RCCHECK(rclc_publisher_init_default(
   &publisher_l,
   &node,
   ROSIDL_GET_MSG_TYPE_SUPPORT(std_msgs, msg, Float32),
   "lwheel"));
 
-
-  //init publisher right wheel
+  //create publisher right wheel
   RCCHECK(rclc_publisher_init_default(
   &publisher_r,
   &node,
@@ -164,17 +215,24 @@ bool create_entities()
     RCL_MS_TO_NS(timer_timeout),
     timer_callback));
 
+  // create service
+  RCCHECK(rclc_service_init_default(&service_restart, &node, ROSIDL_GET_SRV_TYPE_SUPPORT(example_interfaces, srv, SetBool), "/restartESP"));
+
   // create executor
   executor = rclc_executor_get_zero_initialized_executor();
   RCCHECK(rclc_executor_init(&executor, &support.context, 4, &allocator));
-  RCCHECK(rclc_executor_add_timer(&executor, &timer));
+  //RCCHECK(rclc_executor_add_timer(&executor, &timer));
   
+
   //add subscriber
   RCCHECK(rclc_executor_add_subscription(&executor, &subscriber, &msg, &subscription_callback, ON_NEW_DATA));
 
+  //add service
+  RCCHECK(rclc_executor_add_service(&executor, &service_restart, &req, &res, service_callback));
 
   return true;
 }
+
 
 void destroy_entities()
 {
@@ -184,7 +242,8 @@ void destroy_entities()
   rcl_publisher_fini(&publisher_l, &node);
   rcl_publisher_fini(&publisher_r, &node);
   rcl_subscription_fini(&subscriber,&node);
-  rcl_timer_fini(&timer);
+  rcl_service_fini(&service_restart,&node);
+  //rcl_timer_fini(&timer);
   rclc_executor_fini(&executor);
   rcl_node_fini(&node);
   rclc_support_fini(&support);
@@ -193,7 +252,7 @@ void destroy_entities()
 void setup() {
   set_microros_transports();
   //pinMode(LED_PIN, OUTPUT);
-
+  //activeOdrive();
   state = WAITING_AGENT;
 
 }
@@ -207,6 +266,8 @@ void loop() {
       state = (true == create_entities()) ? AGENT_CONNECTED : WAITING_AGENT;
       if (state == WAITING_AGENT) {
         destroy_entities();
+      }else{
+        activeOdrive();
       };
       break;
     case AGENT_CONNECTED:
@@ -224,6 +285,10 @@ void loop() {
   }
 
   if (state == AGENT_CONNECTED) {
-    
+    publishPosition();
+
+    if(restartFlag){
+      ESP.restart();
+    }
   }
 }
