@@ -10,8 +10,9 @@
 #include <rmw_microros/rmw_microros.h>
 
 #include <std_msgs/msg/float32.h>
+#include <geometry_msgs/msg/vector3.h>
 #include <geometry_msgs/msg/twist.h>
-#include <sensor_msgs/msg/imu.h>
+
 #include <nav_msgs/msg/odometry.h>
 #include <micro_ros_utilities/type_utilities.h>
 #include <micro_ros_utilities/string_utilities.h>
@@ -63,7 +64,7 @@ std_msgs__msg__Float32 wheel_r;
 
 //PUBLISHER imu
 rcl_publisher_t publisher_imu;
-sensor_msgs__msg__Imu imu;
+geometry_msgs__msg__Vector3 imu_vector;
 
 //services values
 rcl_service_t service_restart;
@@ -128,30 +129,15 @@ void publishImu(){
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  euler_to_quat(g.gyro.x, g.gyro.y, g.gyro.z, q);
+  //euler_to_quat(g.gyro.x, g.gyro.y, g.gyro.z, q);
 
-  imu.header.frame_id.size = 3;
-  imu.header.frame_id.capacity = 4;
-  imu.header.frame_id.data = "imu";
-    
-  //imu.header.stamp.sec = rmw_uros_epoch_nanos();;
-  //imu.header.stamp.nanosec = rmw_uros_epoch_millis();;
-
-  imu.orientation.w = q[1];
-  imu.orientation.w = q[2];
-  imu.orientation.w = q[3];
-  imu.orientation.w = q[0];
-
-  imu.angular_velocity.x = g.gyro.x;
-  imu.angular_velocity.y = g.gyro.y;
-  imu.angular_velocity.z = g.gyro.z;
-
-  imu.linear_acceleration.x = a.acceleration.x;
-  imu.linear_acceleration.y = a.acceleration.y;
-  imu.linear_acceleration.z = a.acceleration.z;
-
-  rcl_publish(&publisher_imu, &imu , NULL);
+  imu_vector.x = g.gyro.x;
+  imu_vector.y = g.gyro.y;
+  imu_vector.z = g.gyro.z;
+  
+  rcl_publish(&publisher_imu, &imu_vector , NULL);
 }
+
 
 
 //function 
@@ -265,8 +251,8 @@ bool create_entities()
   RCCHECK(rclc_publisher_init_default(
     &publisher_imu,
     &node,
-    ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
-    "/imu"));
+    ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Vector3),
+    "imu_publish"));
 
   // create timer,
   //const unsigned int timer_timeout = 1000;

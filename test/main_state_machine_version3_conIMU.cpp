@@ -137,9 +137,9 @@ void publishImu(){
   //imu.header.stamp.sec = rmw_uros_epoch_nanos();;
   //imu.header.stamp.nanosec = rmw_uros_epoch_millis();;
 
-  imu.orientation.w = q[1];
-  imu.orientation.w = q[2];
-  imu.orientation.w = q[3];
+  imu.orientation.x = q[1];
+  imu.orientation.y = q[2];
+  imu.orientation.z = q[3];
   imu.orientation.w = q[0];
 
   imu.angular_velocity.x = g.gyro.x;
@@ -152,6 +152,7 @@ void publishImu(){
 
   rcl_publish(&publisher_imu, &imu , NULL);
 }
+
 
 
 //function 
@@ -266,7 +267,7 @@ bool create_entities()
     &publisher_imu,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
-    "/imu"));
+    "imu_publish"));
 
   // create timer,
   //const unsigned int timer_timeout = 1000;
