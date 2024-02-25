@@ -2,5 +2,37 @@
     "cmake.configureOnOpen": false,
     "files.associations": {
         "system_error": "cpp"
-    }
+    },
+    "python.autoComplete.extraPaths": [
+        "/home/morolinux/Documents/sbem_project_ws/install/yolov5_ros/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/sbem_vision/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/sbem_tool_gui/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/sbem_speech/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/micro_ros_msgs/local/lib/python3.10/dist-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/differential_drive/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/camera_target_tracking/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/bboxes_ex_msgs/local/lib/python3.10/dist-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/ball_tracker/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/aruco_msgs/local/lib/python3.10/dist-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/aruco_detection/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/URDF_SBEM_description/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/morolinux/Documents/sbem_project_ws/install/yolov5_ros/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/sbem_vision/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/sbem_tool_gui/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/sbem_speech/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/micro_ros_msgs/local/lib/python3.10/dist-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/differential_drive/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/camera_target_tracking/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/bboxes_ex_msgs/local/lib/python3.10/dist-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/ball_tracker/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/aruco_msgs/local/lib/python3.10/dist-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/aruco_detection/lib/python3.10/site-packages",
+        "/home/morolinux/Documents/sbem_project_ws/install/URDF_SBEM_description/lib/python3.10/site-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ]
 }

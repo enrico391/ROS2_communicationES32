@@ -12,8 +12,10 @@
 #include <std_msgs/msg/float32.h>
 #include <geometry_msgs/msg/vector3.h>
 #include <geometry_msgs/msg/twist.h>
-
 #include <nav_msgs/msg/odometry.h>
+#include <sensor_msgs/msg/battery_state.h>
+
+
 #include <micro_ros_utilities/type_utilities.h>
 #include <micro_ros_utilities/string_utilities.h>
 #include <example_interfaces/srv/set_bool.h>
@@ -27,6 +29,12 @@
 #include <Wire.h>
 
 #define LED_PIN 13
+#define BATTERY_PIN 35
+
+#define RESISTOR_1 22000
+#define RESISTOR_2 5100
+
+
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){return false;}}
 #define EXECUTE_EVERY_N_MS(MS, X)  do { \
   static volatile int64_t init = -1; \
@@ -49,10 +57,21 @@ float vel_motor1_linear;
 bool restartFlag = false;
 
 
+//voltage and current battery
+float voltage;
+float current;
+
+float percentage; //percentage battery
+int power_supply_status; //status : 1 charging    3 not charging   4 full 
+
 
 //SUBSCRIBER
 rcl_subscription_t subscriber;
 geometry_msgs__msg__Twist msg;
+
+//PUBLISHER battery status
+rcl_publisher_t publisher_battery;
+sensor_msgs__msg__BatteryState battery;
 
 //PUBLISHER R wheel
 rcl_publisher_t publisher_l;
@@ -123,6 +142,12 @@ const void euler_to_quat(float x, float y, float z, double* q) {
 }
 
 
+float map_percentage(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+
+
 void publishImu(){
   double q[4];
 
@@ -130,12 +155,45 @@ void publishImu(){
   mpu.getEvent(&a, &g, &temp);
 
   //euler_to_quat(g.gyro.x, g.gyro.y, g.gyro.z, q);
-
+  
   imu_vector.x = g.gyro.x;
   imu_vector.y = g.gyro.y;
   imu_vector.z = g.gyro.z;
   
   rcl_publish(&publisher_imu, &imu_vector , NULL);
+}
+
+
+//function that publish battery status 
+void publishBattery(){
+  //calculate voltage from voltage partitor
+  voltage = analogRead(BATTERY_PIN);
+  voltage = voltage*(3.4/4095.0); // 3.3 but with 3.6 more real value
+
+  current = voltage / RESISTOR_2 ;
+  voltage = current * (RESISTOR_1 + RESISTOR_2) ;
+
+  //choose status battery in according with voltage level
+  if(voltage  > 14.5){
+    power_supply_status = 4;
+  } 
+  if(voltage <= 14.5 && voltage > 13.3 ){
+    power_supply_status = 1;
+  }
+  if(voltage <= 13.3){
+    power_supply_status = 3;
+  }
+
+  //map the voltage to percentage battery TODO
+  percentage = map_percentage(voltage,12.8,14.5,0.0,1.0);
+
+  battery.power_supply_status = power_supply_status;
+  battery.percentage = percentage;
+  battery.voltage = voltage;
+  battery.current = current;
+
+  
+  rcl_publish(&publisher_battery, &battery , NULL);
 }
 
 
@@ -254,6 +312,14 @@ bool create_entities()
     ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Vector3),
     "imu_publish"));
 
+
+  //create publisher battery
+  RCCHECK(rclc_publisher_init_default(
+    &publisher_battery,
+    &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, BatteryState),
+    "battery_status"));
+
   // create timer,
   //const unsigned int timer_timeout = 1000;
   //RCCHECK(rclc_timer_init_default(
@@ -286,6 +352,7 @@ void destroy_entities()
   rmw_context_t * rmw_context = rcl_context_get_rmw_context(&support.context);
   (void) rmw_uros_set_context_entity_destroy_session_timeout(rmw_context, 0);
 
+  rcl_publisher_fini(&publisher_battery, &node);
   rcl_publisher_fini(&publisher_l, &node);
   rcl_publisher_fini(&publisher_r, &node);
   rcl_publisher_fini(&publisher_imu, &node);
@@ -302,6 +369,10 @@ void setup() {
   //pinMode(LED_PIN, OUTPUT);
   //activeOdrive();
   state = WAITING_AGENT;
+
+
+  //set pinmode for pin that reads battery voltage
+  pinMode(BATTERY_PIN, INPUT);
 
 
   //setup for mpu6050
@@ -342,9 +413,14 @@ void loop() {
   if (state == AGENT_CONNECTED) {
     publishPosition();
     publishImu();
+    publishBattery();
 
     if(restartFlag){
       ESP.restart();
     }
   }
 }
+
+
+
+
