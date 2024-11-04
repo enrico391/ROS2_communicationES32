@@ -9,13 +9,19 @@
 #include <rclc/executor.h>
 #include <rmw_microros/rmw_microros.h>
 
+
 #include <std_msgs/msg/float32.h>
+#include <geometry_msgs/msg/vector3.h>
 #include <geometry_msgs/msg/twist.h>
-#include <sensor_msgs/msg/imu.h>
 #include <nav_msgs/msg/odometry.h>
+#include <sensor_msgs/msg/battery_state.h>
+#include <sensor_msgs/msg/imu.h>
+
+
 #include <micro_ros_utilities/type_utilities.h>
 #include <micro_ros_utilities/string_utilities.h>
 #include <example_interfaces/srv/set_bool.h>
+#include <rmw_microros/rmw_microros.h>
 
 //for Odrive communication
 #include "ODriveArduino.h"
@@ -26,6 +32,12 @@
 #include <Wire.h>
 
 #define LED_PIN 13
+#define BATTERY_PIN 35
+
+#define RESISTOR_1 22000
+#define RESISTOR_2 5100
+
+
 #define RCCHECK(fn) { rcl_ret_t temp_rc = fn; if((temp_rc != RCL_RET_OK)){return false;}}
 #define EXECUTE_EVERY_N_MS(MS, X)  do { \
   static volatile int64_t init = -1; \
@@ -48,10 +60,28 @@ float vel_motor1_linear;
 bool restartFlag = false;
 
 
+//voltage and current battery
+float voltage;
+float current;
+
+float percentage; //percentage battery
+int power_supply_status; //status : 1 charging    3 not charging   4 full 
+
+const int numReadings = 20;
+float readings[numReadings];  // the readings from the analog input
+int readIndex = 0;          // the index of the current reading
+float total = 0;              // the running total
+float averageV = 0;            // the average
+
+
 
 //SUBSCRIBER
 rcl_subscription_t subscriber;
 geometry_msgs__msg__Twist msg;
+
+//PUBLISHER battery status
+rcl_publisher_t publisher_battery;
+sensor_msgs__msg__BatteryState battery;
 
 //PUBLISHER R wheel
 rcl_publisher_t publisher_l;
@@ -63,7 +93,7 @@ std_msgs__msg__Float32 wheel_r;
 
 //PUBLISHER imu
 rcl_publisher_t publisher_imu;
-sensor_msgs__msg__Imu imu;
+sensor_msgs__msg__Imu imu_msg;
 
 //services values
 rcl_service_t service_restart;
@@ -122,35 +152,93 @@ const void euler_to_quat(float x, float y, float z, double* q) {
 }
 
 
+float map_percentage(float x, float in_min, float in_max, float out_min, float out_max) {
+  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
+}
+
+
+
 void publishImu(){
   double q[4];
 
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  euler_to_quat(g.gyro.x, g.gyro.y, g.gyro.z, q);
+  //euler_to_quat(g.gyro.x, g.gyro.y, g.gyro.z, q);
+  char* content_frame_id = "imu_frame";
+  rcl_time_point_value_t now;
 
-  imu.header.frame_id.size = 3;
-  imu.header.frame_id.capacity = 4;
-  imu.header.frame_id.data = "imu";
+
+
+  imu_msg.header.frame_id.data = "imu";
+  imu_msg.header.frame_id.size = 3;
+
+  imu_msg.header.stamp.sec = rmw_uros_epoch_millis() * 1000;
+  imu_msg.header.stamp.nanosec = rmw_uros_epoch_nanos();;
+
+  imu_msg.angular_velocity.x = g.gyro.x;
+  imu_msg.angular_velocity.y = g.gyro.y;
+  imu_msg.angular_velocity.z = g.gyro.z;
+  imu_msg.linear_acceleration.x = a.acceleration.x;
+  imu_msg.linear_acceleration.y = a.acceleration.y;
+  imu_msg.linear_acceleration.z = a.acceleration.z;
+  
+  rcl_publish(&publisher_imu, &imu_msg , NULL);
+}
+
+
+//function that publish battery status 
+void publishBattery(){
+  //calculate voltage from voltage partitor
+  voltage = analogRead(BATTERY_PIN);
+  voltage = (voltage / 4095 ) * 3.45; // 3.3 but with 3.6 more real value
+
+  //voltage partitor
+  current = voltage / RESISTOR_2;
+  voltage = current * (RESISTOR_1 + RESISTOR_2);
     
-  //imu.header.stamp.sec = rmw_uros_epoch_nanos();;
-  //imu.header.stamp.nanosec = rmw_uros_epoch_millis();;
+  //AVERAGE VOLTAGE
+  // subtract the last reading:
+  total = total - readings[readIndex];
+  // read from the sensor:
+  readings[readIndex] = voltage;
+  // add the reading to the total:
+  total = total + readings[readIndex];
+  // advance to the next position in the array:
+  readIndex = readIndex + 1;
 
-  imu.orientation.x = q[1];
-  imu.orientation.y = q[2];
-  imu.orientation.z = q[3];
-  imu.orientation.w = q[0];
+  // if we're at the end of the array...
+  if (readIndex >= numReadings) {
+    // ...wrap around to the beginning:
+    readIndex = 0;
+  }
 
-  imu.angular_velocity.x = g.gyro.x;
-  imu.angular_velocity.y = g.gyro.y;
-  imu.angular_velocity.z = g.gyro.z;
+  // calculate the average voltage and current:
+  averageV = total / numReadings;
 
-  imu.linear_acceleration.x = a.acceleration.x;
-  imu.linear_acceleration.y = a.acceleration.y;
-  imu.linear_acceleration.z = a.acceleration.z;
+  current = averageV / RESISTOR_2;
 
-  rcl_publish(&publisher_imu, &imu , NULL);
+  //choose status battery in according with voltage level
+  if(voltage  > 14.5){
+    power_supply_status = 4;
+  } 
+  if(voltage <= 14.5 && voltage > 13.3 ){
+    power_supply_status = 1;
+  }
+  if(voltage <= 13.3){
+    power_supply_status = 3;
+  }
+
+  //map the voltage to percentage battery TODO
+  percentage = map_percentage(voltage,12.5,14.5,0.0,1.0);
+
+  battery.power_supply_status = power_supply_status;
+  battery.percentage = percentage;
+  battery.voltage = averageV;
+  battery.current = current;
+
+  
+  rcl_publish(&publisher_battery, &battery , NULL);
 }
 
 
@@ -172,6 +260,17 @@ void activeOdrive(){
 
   int requested_state;
   requested_state = ODriveArduino::AXIS_STATE_CLOSED_LOOP_CONTROL;
+  
+  odrive.run_state(1, requested_state, false); // don't wait 
+  odrive.run_state(0, requested_state, false); // don't wait 
+}
+
+void disableOdrive(){
+  // Setup ODrive
+  Serial2.begin(115200, SERIAL_8N1, 16, 17);
+
+  int requested_state;
+  requested_state = ODriveArduino::AXIS_STATE_UNDEFINED;
   
   odrive.run_state(1, requested_state, false); // don't wait 
   odrive.run_state(0, requested_state, false); // don't wait 
@@ -217,7 +316,7 @@ void service_callback(const void * req, void * res){
     //TO DO (make responso works)
     res_in->message.size = 20;
     res_in->message.capacity = 21;
-    char * status = "Riavvio in corso....";
+    char * status = "Restart....";
     res_in->message.data = status;
 
     restartFlag = true;
@@ -267,7 +366,15 @@ bool create_entities()
     &publisher_imu,
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, Imu),
-    "imu_publish"));
+    "imu_data"));
+
+
+  //create publisher battery
+  RCCHECK(rclc_publisher_init_default(
+    &publisher_battery,
+    &node,
+    ROSIDL_GET_MSG_TYPE_SUPPORT(sensor_msgs, msg, BatteryState),
+    "battery_state"));
 
   // create timer,
   //const unsigned int timer_timeout = 1000;
@@ -301,6 +408,7 @@ void destroy_entities()
   rmw_context_t * rmw_context = rcl_context_get_rmw_context(&support.context);
   (void) rmw_uros_set_context_entity_destroy_session_timeout(rmw_context, 0);
 
+  rcl_publisher_fini(&publisher_battery, &node);
   rcl_publisher_fini(&publisher_l, &node);
   rcl_publisher_fini(&publisher_r, &node);
   rcl_publisher_fini(&publisher_imu, &node);
@@ -317,6 +425,15 @@ void setup() {
   //pinMode(LED_PIN, OUTPUT);
   //activeOdrive();
   state = WAITING_AGENT;
+
+  
+  for (int thisReading = 0; thisReading < numReadings; thisReading++) {
+    readings[thisReading] = 0;
+  }
+
+
+  //set pinmode for pin that reads battery voltage
+  pinMode(BATTERY_PIN, INPUT);
 
 
   //setup for mpu6050
@@ -348,6 +465,7 @@ void loop() {
       break;
     case AGENT_DISCONNECTED:
       destroy_entities();
+      disableOdrive();
       state = WAITING_AGENT;
       break;
     default:
@@ -357,9 +475,14 @@ void loop() {
   if (state == AGENT_CONNECTED) {
     publishPosition();
     publishImu();
+    publishBattery();
 
     if(restartFlag){
       ESP.restart();
     }
   }
 }
+
+
+
+
