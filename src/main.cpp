@@ -246,24 +246,24 @@ void publishBattery(){
   //map the voltage to percentage battery TODO
   percentage = map_percentage(voltage,12.5,14.5,0.0,1.0);
 
-  switch (voltage)
-  {
-  case(voltage > 13.4):
-    percentage = 100;
-    break;
-  case (voltage > 13.3):
-    percentage = 90;
-    break;
-  case (voltage > 13.2):
-    percentage = 80;
-    break;
-  case (voltage > 13.4):
-    percentage = 100;
-    break;
+  // switch (voltage)
+  // {
+  // case(voltage > 13.4):
+  //   percentage = 100;
+  //   break;
+  // case (voltage > 13.3):
+  //   percentage = 90;
+  //   break;
+  // case (voltage > 13.2):
+  //   percentage = 80;
+  //   break;
+  // case (voltage > 13.4):
+  //   percentage = 100;
+  //   break;
   
-  default:
-    break;
-  } voltage:
+  // default:
+  //   break;
+  // } voltage:
 
 
   //to obtain correct timestamp
@@ -375,13 +375,17 @@ void activeOdrive(){
 
 void disableOdrive(){
   // Setup ODrive
-  Serial2.begin(115200, SERIAL_8N1, 16, 17);
+  //Serial2.begin(115200, SERIAL_8N1, 16, 17);
 
-  int requested_state;
-  requested_state = ODriveArduino::AXIS_STATE_UNDEFINED;
+  //int requested_state;
+  //requested_state = ODriveArduino::AXIS_STATE_UNDEFINED;
+
+  //set zero speed
+  odrive.SetVelocity(0,0);
+  odrive.SetVelocity(1,0);
   
-  odrive.run_state(1, requested_state, false); // don't wait 
-  odrive.run_state(0, requested_state, false); // don't wait 
+  //odrive.run_state(1, requested_state, false); // don't wait 
+  //odrive.run_state(0, requested_state, false); // don't wait 
 }
 
 
@@ -455,6 +459,8 @@ bool create_entities()
     &node,
     ROSIDL_GET_MSG_TYPE_SUPPORT(geometry_msgs, msg, Twist),
     "/cmd_vel"));
+
+  
 
   //create publisher odom
   // RCCHECK(rclc_publisher_init_default(
@@ -560,6 +566,8 @@ void setup() {
   mpu.begin();
 }
 
+
+
 void loop() {
   switch (state) {
     case WAITING_AGENT:
@@ -576,6 +584,22 @@ void loop() {
     case AGENT_CONNECTED:
       EXECUTE_EVERY_N_MS(200, state = (RMW_RET_OK == rmw_uros_ping_agent(100, 1)) ? AGENT_CONNECTED : AGENT_DISCONNECTED;);
       if (state == AGENT_CONNECTED) {
+
+        publishPosition();
+        publishImu();
+        publishBattery();
+        //publishOdom();
+
+        if(restartFlag){
+          ESP.restart();
+        }
+        
+        //check for disable speed odrive if cmd_vel is 0 (SAFE CHECK)
+        if(rcl_subscription_is_valid(&subscriber)){
+          disableOdrive();
+        }
+
+        //spin 
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(100));
         
       }
@@ -587,17 +611,6 @@ void loop() {
       break;
     default:
       break;
-  }
-
-  if (state == AGENT_CONNECTED) {
-    publishPosition();
-    publishImu();
-    publishBattery();
-    //publishOdom();
-
-    if(restartFlag){
-      ESP.restart();
-    }
   }
 }
 
