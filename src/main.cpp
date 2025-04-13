@@ -65,14 +65,7 @@ float current_filtered = 0;
 float num_samples = 30;
 
 float percentage; //percentage battery
-int power_supply_status; //status : 1 charging    3 not charging   4 full 
-
-// const int numReadings = 20;
-// float readings[numReadings];  // the readings from the analog input
-// int readIndex = 0;          // the index of the current reading
-// float total = 0;              // the running total
-// float averageV = 0;            // the average
-
+int power_supply_status; //status : 1 charging  3 not charging  4 full 
 
 
 //SUBSCRIBER
@@ -121,28 +114,6 @@ enum batteryStatus{
   FULL = 4
 } battery_status;
 
-
-
-//function to convert euler to quaternion
-const void euler_to_quat(float x, float y, float z, double* q) {
-    float c1 = cos((y*3.14/180.0)/2);
-    float c2 = cos((z*3.14/180.0)/2);
-    float c3 = cos((x*3.14/180.0)/2);
-
-    float s1 = sin((y*3.14/180.0)/2);
-    float s2 = sin((z*3.14/180.0)/2);
-    float s3 = sin((x*3.14/180.0)/2);
-
-    q[0] = c1 * c2 * c3 - s1 * s2 * s3;
-    q[1] = s1 * s2 * c3 + c1 * c2 * s3;
-    q[2] = s1 * c2 * c3 + c1 * s2 * s3;
-    q[3] = c1 * s2 * c3 - s1 * c2 * s3;
-}
-
-
-float map_percentage(float x, float in_min, float in_max, float out_min, float out_max) {
-  return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
-}
 
 
 //function that publish battery status 
@@ -364,12 +335,6 @@ void setup() {
   //activeOdrive();
   state = WAITING_AGENT;
 
-  
-  // for (int thisReading = 0; thisReading < numReadings; thisReading++) {
-  //   readings[thisReading] = 0;
-  // }
-
-
   //set pinmode for pin that reads battery voltage
   pinMode(BATTERY_PIN, INPUT);
 
@@ -422,7 +387,6 @@ void loop() {
         
         //spin 
         rclc_executor_spin_some(&executor, RCL_MS_TO_NS(10)); //100
-        
       }
       break;
     case AGENT_DISCONNECTED:
