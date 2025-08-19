@@ -248,7 +248,7 @@ void led_blink() {
 void setMotorSpeeds(float left_speed, float right_speed) {
   // set wheels' speed
   odrive.SetVelocity(0,right_speed);
-  odrive.SetVelocity(1,-left_speed);
+  odrive.SetVelocity(1,left_speed);
 }
 
 
