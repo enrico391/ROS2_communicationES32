@@ -18,6 +18,9 @@
 
 #define LED_PIN         2   // Built-in LED
 #define PIN_RESET_ODRIVE 15
+#define BATTERY_PIN 35
+#define RESISTOR_1 22000
+#define RESISTOR_2 5100
 
 // ODrive object
 ODriveArduino odrive(Serial2);
@@ -31,7 +34,11 @@ void activeOdrive();
 void resetOdrive();
 void led_blink();
 void encoders_read();
+void read_battery_voltage();
 
+
+// motor 0 is right
+// motor 1 is left
 
 // Encoder variables
 float encoder_left = 0;
@@ -40,6 +47,16 @@ float encoder_right = 0;
 // Motor control variables
 int motor_left_speed = 0;   // -255 to 255
 int motor_right_speed = 0;  // -255 to 255
+
+// variable to manage battery reading
+float voltage = 0;
+float current = 0;
+float averageV = 0;
+float total = 0;              // the running total
+int readIndex = 0;          // the index of the current reading
+const int numReadings = 20;
+float readings[numReadings];  // the readings from the analog input
+
 
 // PID variables
 struct PIDParams {
@@ -58,11 +75,6 @@ unsigned long lastHeartbeat = 0;
 unsigned long lastEncoderPrint = 0;
 const unsigned long HEARTBEAT_INTERVAL = 1000;  // 1 second
 const unsigned long ENCODER_PRINT_INTERVAL = 100;  // 100ms
-
-
-
-
-
 
 
 void setup() {
@@ -102,25 +114,13 @@ void setup() {
 
 void loop() {
   encoders_read();  // Read encoders
+  read_battery_voltage(); // Read battery voltage
   // Check for incoming serial commands
   if (stringComplete) {
     processCommand(inputString);
     inputString = "";
     stringComplete = false;
   }
-  
-  
-  
-  // Debug encoder values periodically (comment out in production)
-  /*
-  if (currentTime - lastEncoderPrint > ENCODER_PRINT_INTERVAL) {
-    Serial.print("Debug - Left: ");
-    Serial.print(encoder_left);
-    Serial.print(", Right: ");
-    Serial.println(encoder_right);
-    lastEncoderPrint = currentTime;
-  }
-  */
   
   // Small delay to prevent overwhelming the system
   delay(1);
@@ -151,14 +151,16 @@ void processCommand(String command) {
   else if (command == "e") {
     led_blink();
     // Read encoder values
-    noInterrupts();
-    float left_enc = encoder_left;
-    float right_enc = encoder_right;
-    interrupts();
-    
-    Serial.print(left_enc);
+    //noInterrupts();
+    //float left_enc = encoder_left;
+    //float right_enc = encoder_right;
+    //interrupts();
+    // string will be like: "left_enc right_enc battery_voltage"
+    Serial.print(encoder_left);
     Serial.print(" ");
-    Serial.print(right_enc);
+    Serial.print(encoder_right);
+    Serial.print(" ");
+    Serial.print("14.3");//Serial.print(averageV);
     Serial.print("\r\n");
   }
   else if (command.startsWith("m ")) {
@@ -174,39 +176,6 @@ void processCommand(String command) {
       Serial.print("Invalid motor command format\r\n");
     }
   }
-  else if (command.startsWith("u ")) {
-    // Set PID values: "u kp:kd:ki:ko"
-    String pidValues = command.substring(2);
-    if (parsePIDValues(pidValues)) {
-      Serial.print("\r\n");
-    } else {
-      Serial.print("Invalid PID format\r\n");
-    }
-  }
-  else if (command == "reset") {
-    resetOdrive();
-    Serial.print("Encoders reset\r\n");
-  }
-  else if (command == "stop") {
-    // Emergency stop
-    Serial.print("Motors stopped\r\n");
-  }
-  else if (command == "status") {
-    // Status report
-    Serial.print("Left motor: ");
-    Serial.print(motor_left_speed);
-    Serial.print(", Right motor: ");
-    Serial.print(motor_right_speed);
-    Serial.print(", PID: ");
-    Serial.print(pid.kp);
-    Serial.print(":");
-    Serial.print(pid.kd);
-    Serial.print(":");
-    Serial.print(pid.ki);
-    Serial.print(":");
-    Serial.print(pid.ko);
-    Serial.print("\r\n");
-  }
   else {
     // Unknown command
     Serial.print("Unknown command: ");
@@ -218,20 +187,32 @@ void processCommand(String command) {
 }
 
 
+void read_battery_voltage() {
+  voltage = analogRead(BATTERY_PIN);
+  voltage = (voltage / 4095 ) * 3.45; // 3.3 but with 3.6 more real value
 
-bool parsePIDValues(String pidString) {
-  int colonIndex1 = pidString.indexOf(':');
-  int colonIndex2 = pidString.indexOf(':', colonIndex1 + 1);
-  int colonIndex3 = pidString.indexOf(':', colonIndex2 + 1);
-  
-  if (colonIndex1 > 0 && colonIndex2 > 0 && colonIndex3 > 0) {
-    pid.kp = pidString.substring(0, colonIndex1).toInt();
-    pid.kd = pidString.substring(colonIndex1 + 1, colonIndex2).toInt();
-    pid.ki = pidString.substring(colonIndex2 + 1, colonIndex3).toInt();
-    pid.ko = pidString.substring(colonIndex3 + 1).toInt();
-    return true;
+  //voltage partitor
+  current = voltage / RESISTOR_2;
+  voltage = current * (RESISTOR_1 + RESISTOR_2);
+    
+  //AVERAGE VOLTAGE
+  // subtract the last reading:
+  total = total - readings[readIndex];
+  // read from the sensor:
+  readings[readIndex] = voltage;
+  // add the reading to the total:
+  total = total + readings[readIndex];
+  // advance to the next position in the array:
+  readIndex = readIndex + 1;
+
+  // if we're at the end of the array...
+  if (readIndex >= numReadings) {
+    // ...wrap around to the beginning:
+    readIndex = 0;
   }
-  return false;
+
+  // calculate the average voltage and current:
+  averageV = total / numReadings;
 }
 
 
