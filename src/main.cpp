@@ -52,10 +52,11 @@ int motor_right_speed = 0;  // -255 to 255
 float voltage = 0;
 float current = 0;
 float averageV = 0;
-float total = 0;              // the running total
+float average_current = 0.0;
+float total = 0.0; //total voltage
 int readIndex = 0;          // the index of the current reading
 const int numReadings = 20;
-float readings[numReadings];  // the readings from the analog input
+float voltage_readings[numReadings];  // the readings from the analog input
 
 
 // PID variables
@@ -149,18 +150,16 @@ void processCommand(String command) {
     Serial.print("\r\n");
   }
   else if (command == "e") {
-    led_blink();
-    // Read encoder values
-    //noInterrupts();
-    //float left_enc = encoder_left;
-    //float right_enc = encoder_right;
-    //interrupts();
-    // string will be like: "left_enc right_enc battery_voltage"
+    //led_blink();
+    
+    // string will be like: "left_enc right_enc battery_voltage battery_current"
     Serial.print(encoder_left);
     Serial.print(" ");
     Serial.print(encoder_right);
     Serial.print(" ");
     Serial.print(averageV);//Serial.print(averageV);
+    Serial.print(" ");
+    Serial.print(current*100);
     Serial.print("\r\n");
   }
   else if (command.startsWith("m ")) {
@@ -194,14 +193,14 @@ void read_battery_voltage() {
   //voltage partitor
   current = voltage / RESISTOR_2;
   voltage = current * (RESISTOR_1 + RESISTOR_2);
-    
+
   //AVERAGE VOLTAGE
   // subtract the last reading:
-  total = total - readings[readIndex];
+  total = total - voltage_readings[readIndex];
   // read from the sensor:
-  readings[readIndex] = voltage;
+  voltage_readings[readIndex] = voltage;
   // add the reading to the total:
-  total = total + readings[readIndex];
+  total = total + voltage_readings[readIndex];
   // advance to the next position in the array:
   readIndex = readIndex + 1;
 
@@ -213,6 +212,7 @@ void read_battery_voltage() {
 
   // calculate the average voltage and current:
   averageV = total / numReadings;
+  average_current = averageV / (RESISTOR_1 + RESISTOR_2);
 }
 
 
