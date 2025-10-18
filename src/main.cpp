@@ -160,7 +160,7 @@ void processCommand(String command) {
     Serial.print(" ");
     Serial.print(encoder_right);
     Serial.print(" ");
-    Serial.print("14.3");//Serial.print(averageV);
+    Serial.print(averageV);//Serial.print(averageV);
     Serial.print("\r\n");
   }
   else if (command.startsWith("m ")) {
