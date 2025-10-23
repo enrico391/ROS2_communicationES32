@@ -19,8 +19,9 @@
 #define LED_PIN         2   // Built-in LED
 #define PIN_RESET_ODRIVE 15
 #define BATTERY_PIN 35
-#define RESISTOR_1 22000
-#define RESISTOR_2 5100
+
+const int RESISTOR_1{22000};
+const int RESISTOR_2{5100};
 
 // ODrive object
 ODriveArduino odrive(Serial2);
@@ -52,10 +53,10 @@ int motor_right_speed = 0;  // -255 to 255
 float voltage = 0;
 float current = 0;
 float averageV = 0;
-float average_current = 0.0;
+double average_current = 0.0;
 float total = 0.0; //total voltage
 int readIndex = 0;          // the index of the current reading
-const int numReadings = 20;
+const int numReadings = 200;
 float voltage_readings[numReadings];  // the readings from the analog input
 
 
@@ -116,6 +117,7 @@ void setup() {
 void loop() {
   encoders_read();  // Read encoders
   read_battery_voltage(); // Read battery voltage
+
   // Check for incoming serial commands
   if (stringComplete) {
     processCommand(inputString);
@@ -152,14 +154,14 @@ void processCommand(String command) {
   else if (command == "e") {
     //led_blink();
     
-    // string will be like: "left_enc right_enc battery_voltage battery_current"
+    // Send encoder values and battery voltage
     Serial.print(encoder_left);
     Serial.print(" ");
     Serial.print(encoder_right);
     Serial.print(" ");
     Serial.print(averageV);//Serial.print(averageV);
     Serial.print(" ");
-    Serial.print(current*100);
+    Serial.print(average_current);
     Serial.print("\r\n");
   }
   else if (command.startsWith("m ")) {
@@ -212,7 +214,7 @@ void read_battery_voltage() {
 
   // calculate the average voltage and current:
   averageV = total / numReadings;
-  average_current = averageV / (RESISTOR_1 + RESISTOR_2);
+  average_current = averageV*10000 / (RESISTOR_1 + RESISTOR_2); // use a factor 100 to have more precision
 }
 
 
