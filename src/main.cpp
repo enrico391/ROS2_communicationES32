@@ -1,9 +1,6 @@
 /*
- * SBEM ESP32 Controller with MicroROS Support
- * 
- * This ESP32 script communicates with the ROS2 hardware interface
- * and can also run MicroROS for direct ROS2 communication.
- * 
+ * SBEM ESP32 Controller for ROS2 control
+ *
  * Features:
  * - Serial communication with ROS2 hardware interface
  * - Encoder reading with quadrature decoding
@@ -30,7 +27,6 @@ ODriveArduino odrive(Serial2);
 // declaration of functions
 void processCommand(String command);
 void setMotorSpeeds(float left_speed, float right_speed);
-bool parsePIDValues(String pidString);
 void activeOdrive();
 void resetOdrive();
 void led_blink();
@@ -45,10 +41,6 @@ void read_battery_voltage();
 float encoder_left = 0;
 float encoder_right = 0;
 
-// Motor control variables
-int motor_left_speed = 0;   // -255 to 255
-int motor_right_speed = 0;  // -255 to 255
-
 // variable to manage battery reading
 float voltage = 0;
 float current = 0;
@@ -59,24 +51,13 @@ int readIndex = 0;          // the index of the current reading
 const int numReadings = 200;
 float voltage_readings[numReadings];  // the readings from the analog input
 
-
-// PID variables
-struct PIDParams {
-  int kp = 100;
-  int kd = 10;
-  int ki = 5;
-  int ko = 50;
-} pid;
-
 // Communication variables
 String inputString = "";
 boolean stringComplete = false;
 
 // Timing variables
 unsigned long lastHeartbeat = 0;
-unsigned long lastEncoderPrint = 0;
 const unsigned long HEARTBEAT_INTERVAL = 1000;  // 1 second
-const unsigned long ENCODER_PRINT_INTERVAL = 100;  // 100ms
 
 
 void setup() {
@@ -92,8 +73,9 @@ void setup() {
   
   //set pinMode for reset odrive
   pinMode(PIN_RESET_ODRIVE, OUTPUT);
+
   //set pinmode Odrive HIGH to enable it
-  digitalWrite(PIN_RESET_ODRIVE, HIGH);
+  //digitalWrite(PIN_RESET_ODRIVE, HIGH);
   
   // Reserve string buffer
   inputString.reserve(200);
@@ -101,11 +83,11 @@ void setup() {
   digitalWrite(LED_PIN, LOW);  // Turn off LED after setup
 
   // Initialize ODrive
-  int i = 0;
-  while(i < 500){
-    activeOdrive();
-    i++;
-  }
+  // int i = 0;
+  // while(i < 500){
+  activeOdrive();
+  //   i++;
+  // }
   
 
   
@@ -252,8 +234,12 @@ void activeOdrive(){
   int requested_state;
   requested_state = ODriveArduino::AXIS_STATE_CLOSED_LOOP_CONTROL;
   
-  odrive.run_state(1, requested_state, false); // don't wait 
-  odrive.run_state(0, requested_state, false); // don't wait 
+  int c = 0;
+  while (c++ < 500) {
+    odrive.run_state(0, requested_state, false); // don't wait 
+    odrive.run_state(1, requested_state, false); // don't wait 
+    delay(10);
+  }
 }
 
 void resetOdrive(){
