@@ -17,7 +17,7 @@
 #define PIN_RESET_ODRIVE 15
 #define BATTERY_PIN 35
 
-const int RESISTOR_1{22000};
+const int RESISTOR_1{28500};
 const int RESISTOR_2{5100};
 
 // ODrive object
@@ -171,32 +171,26 @@ void processCommand(String command) {
 
 
 void read_battery_voltage() {
-  voltage = analogRead(BATTERY_PIN);
-  voltage = (voltage / 4095 ) * 3.45; // 3.3 but with 3.6 more real value
+  constexpr float ADC_MAX = 4095.0f;
+  constexpr float VREF = 3.3f; // calibrated ADC reference
+  // read ADC and convert to measured ADC voltage
+  float raw = static_cast<float>(analogRead(BATTERY_PIN));
+  float v_adc = (raw / ADC_MAX) * VREF;
 
-  //voltage partitor
-  current = voltage / RESISTOR_2;
-  voltage = current * (RESISTOR_1 + RESISTOR_2);
+  // compute actual battery voltage using resistor divider
+  float v_bat = v_adc * (static_cast<float>(RESISTOR_1 + RESISTOR_2) / RESISTOR_2);
 
-  //AVERAGE VOLTAGE
-  // subtract the last reading:
-  total = total - voltage_readings[readIndex];
-  // read from the sensor:
-  voltage_readings[readIndex] = voltage;
-  // add the reading to the total:
-  total = total + voltage_readings[readIndex];
-  // advance to the next position in the array:
-  readIndex = readIndex + 1;
+  // update circular buffer / running total for moving average
+  total -= voltage_readings[readIndex];
+  voltage_readings[readIndex] = v_bat;
+  total += voltage_readings[readIndex];
 
-  // if we're at the end of the array...
-  if (readIndex >= numReadings) {
-    // ...wrap around to the beginning:
-    readIndex = 0;
-  }
+  readIndex = (readIndex + 1) % numReadings;
 
-  // calculate the average voltage and current:
+  // averaged values
   averageV = total / numReadings;
-  average_current = averageV*10000 / (RESISTOR_1 + RESISTOR_2); // use a factor 100 to have more precision
+  // current through the divider (A). Multiply by 1000 for mA if desired.
+  average_current = averageV / static_cast<double>(RESISTOR_1 + RESISTOR_2);
 }
 
 
@@ -227,9 +221,11 @@ void encoders_read() {
 void activeOdrive(){
   // Setup ODrive
   //enable odrive
+  digitalWrite(PIN_RESET_ODRIVE, LOW);
+  delay(100);
   digitalWrite(PIN_RESET_ODRIVE, HIGH);
+  delay(1000); // Wait for ODrive to boot up
 
-  Serial2.begin(115200, SERIAL_8N1, 16, 17);
 
   int requested_state;
   requested_state = ODriveArduino::AXIS_STATE_CLOSED_LOOP_CONTROL;
@@ -237,6 +233,11 @@ void activeOdrive(){
   int c = 0;
   while (c++ < 500) {
     odrive.run_state(0, requested_state, false); // don't wait 
+    delay(10);
+  }
+
+  c = 0;
+  while (c++ < 500) {
     odrive.run_state(1, requested_state, false); // don't wait 
     delay(10);
   }
