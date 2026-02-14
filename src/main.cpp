@@ -11,6 +11,9 @@
 
 //for Odrive communication
 #include "ODriveArduino.h"
+#include <Wire.h>
+#include <Adafruit_INA219.h>
+
 
 
 #define LED_PIN         2   // Built-in LED
@@ -23,6 +26,9 @@ const int RESISTOR_2{5100};
 // ODrive object
 ODriveArduino odrive(Serial2);
 
+// INA219 sensor object
+Adafruit_INA219 ina219;
+
 
 // declaration of functions
 void processCommand(String command);
@@ -31,7 +37,8 @@ void activeOdrive();
 void resetOdrive();
 void led_blink();
 void encoders_read();
-void read_battery_voltage();
+//void read_battery_voltage();
+void read_battery_voltage_ina219();
 
 
 // motor 0 is right
@@ -48,8 +55,14 @@ float averageV = 0;
 double average_current = 0.0;
 float total = 0.0; //total voltage
 int readIndex = 0;          // the index of the current reading
-const int numReadings = 200;
+const int numReadings = 50;
 float voltage_readings[numReadings];  // the readings from the analog input
+
+// variables for battery voltage reading using INA219
+float shuntvoltage = 0;
+float loadvoltage = 0;
+float current_mA = 0;
+float busvoltage = 0;
 
 // Communication variables
 String inputString = "";
@@ -74,22 +87,22 @@ void setup() {
   //set pinMode for reset odrive
   pinMode(PIN_RESET_ODRIVE, OUTPUT);
 
-  //set pinmode Odrive HIGH to enable it
-  //digitalWrite(PIN_RESET_ODRIVE, HIGH);
+  // pin mode for battery voltage reading
+  pinMode(BATTERY_PIN, INPUT);
   
   // Reserve string buffer
   inputString.reserve(200);
   
   digitalWrite(LED_PIN, LOW);  // Turn off LED after setup
 
-  // Initialize ODrive
-  // int i = 0;
-  // while(i < 500){
-  activeOdrive();
-  //   i++;
-  // }
-  
 
+  // initialize ina219 sensor
+  if (! ina219.begin()) {
+    while (1) { delay(10); }
+  }
+
+  // Initialize ODrive
+  activeOdrive();
   
   // Send ready message
   Serial.println("ESP32 SBEM controller ready");
@@ -98,7 +111,7 @@ void setup() {
 
 void loop() {
   encoders_read();  // Read encoders
-  read_battery_voltage(); // Read battery voltage
+  read_battery_voltage_ina219(); // Read battery voltage
 
   // Check for incoming serial commands
   if (stringComplete) {
@@ -170,27 +183,47 @@ void processCommand(String command) {
 }
 
 
-void read_battery_voltage() {
-  constexpr float ADC_MAX = 4095.0f;
-  constexpr float VREF = 3.3f; // calibrated ADC reference
-  // read ADC and convert to measured ADC voltage
-  float raw = static_cast<float>(analogRead(BATTERY_PIN));
-  float v_adc = (raw / ADC_MAX) * VREF;
+// void read_battery_voltage() {
+//   constexpr float ADC_MAX = 4095.0f;
+//   constexpr float VREF = 3.3f; // calibrated ADC reference
+//   // read ADC and convert to measured ADC voltage
+//   float raw = static_cast<float>(analogRead(BATTERY_PIN));
+//   float v_adc = (raw / ADC_MAX) * VREF;
 
-  // compute actual battery voltage using resistor divider
-  float v_bat = v_adc * (static_cast<float>(RESISTOR_1 + RESISTOR_2) / RESISTOR_2);
+//   // compute actual battery voltage using resistor divider
+//   float v_bat = v_adc * (static_cast<float>(RESISTOR_1 + RESISTOR_2) / RESISTOR_2);
+
+//   // update circular buffer / running total for moving average
+//   total -= voltage_readings[readIndex];
+//   voltage_readings[readIndex] = v_bat;
+//   total += voltage_readings[readIndex];
+
+//   readIndex = (readIndex + 1) % numReadings;
+
+//   // averaged values
+//   averageV = total / numReadings;
+//   // current through the divider (A). Multiply by 1000 for mA if desired.
+//   average_current = averageV / static_cast<double>(RESISTOR_1 + RESISTOR_2);
+// }
+
+void read_battery_voltage_ina219() {
+  
+  // read voltage and current from INA219
+  shuntvoltage = ina219.getShuntVoltage_mV();
+  busvoltage = ina219.getBusVoltage_V();
+  loadvoltage = ina219.getBusVoltage_V() + (shuntvoltage / 1000.0f); // Convert shunt voltage to volts and add to bus voltage
+  current_mA = ina219.getCurrent_mA();
 
   // update circular buffer / running total for moving average
   total -= voltage_readings[readIndex];
-  voltage_readings[readIndex] = v_bat;
+  voltage_readings[readIndex] = loadvoltage;
   total += voltage_readings[readIndex];
 
   readIndex = (readIndex + 1) % numReadings;
 
   // averaged values
   averageV = total / numReadings;
-  // current through the divider (A). Multiply by 1000 for mA if desired.
-  average_current = averageV / static_cast<double>(RESISTOR_1 + RESISTOR_2);
+  average_current = current_mA;
 }
 
 
