@@ -1,6 +1,9 @@
 
 #include "Arduino.h"
 #include "ODriveArduino.h"
+#include <ctype.h>
+#include <math.h>
+#include <stdlib.h>
 
 static const int kMotorOffsetFloat = 2;
 static const int kMotorStrideFloat = 28;
@@ -58,6 +61,34 @@ float ODriveArduino::GetVelocity(int motor_number){
 float ODriveArduino::GetPosition(int motor_number){
 	serial_<< "r axis" << motor_number << ".encoder.pos_estimate\n";
 	return ODriveArduino::readFloat();
+}
+
+bool ODriveArduino::GetPosition(int motor_number, float& position, uint32_t timeout_ms) {
+    const uint32_t started_ms = millis();
+    serial_ << "r axis" << motor_number << ".encoder.pos_estimate\n";
+    char response[48];
+    size_t length = 0;
+    while (uint32_t(millis() - started_ms) < timeout_ms) {
+        if (!serial_.available()) {
+            delay(1); // Yield to FreeRTOS while waiting for the UART.
+            continue;
+        }
+        const int c = serial_.read();
+        if (c < 0) continue;
+        if (c == '\n') {
+            response[length] = '\0';
+            char* end;
+            const float parsed = strtof(response, &end);
+            if (end == response || !isfinite(parsed)) return false;
+            while (isspace(static_cast<unsigned char>(*end))) ++end;
+            if (*end != '\0') return false;
+            position = parsed;
+            return true;
+        }
+        if (c == '\0' || length == sizeof(response) - 1) return false;
+        response[length++] = static_cast<char>(c);
+    }
+    return false;
 }
 
 int32_t ODriveArduino::readInt() {

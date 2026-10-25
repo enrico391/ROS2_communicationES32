@@ -44,6 +44,8 @@ public:
     // Getters
     float GetVelocity(int motor_number);
     float GetPosition(int motor_number);
+    // Bounded read: leave position unchanged on timeout or invalid response.
+    bool GetPosition(int motor_number, float& position, uint32_t timeout_ms);
     // General params
     float readFloat();
     int32_t readInt();
