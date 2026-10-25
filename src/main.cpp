@@ -47,6 +47,8 @@ void read_battery_voltage_ina219();
 // Encoder variables
 float encoder_left = 0;
 float encoder_right = 0;
+uint32_t odrive_right_read_us = 0;
+uint32_t odrive_left_read_us = 0;
 
 // variable to manage battery reading
 float voltage = 0;
@@ -157,6 +159,11 @@ void processCommand(String command) {
     Serial.print(averageV);//Serial.print(averageV);
     Serial.print(" ");
     Serial.print(average_current);
+    // Optional diagnostics follow the four values expected by the Jetson.
+    Serial.print(" ");
+    Serial.print(odrive_right_read_us);
+    Serial.print(" ");
+    Serial.print(odrive_left_read_us);
     Serial.print("\r\n");
   }
   else if (command.startsWith("m ")) {
@@ -246,8 +253,13 @@ void setMotorSpeeds(float left_speed, float right_speed) {
 
 // Interrupt service routine for left encoder (quadrature decoding)
 void encoders_read() {
+  const uint32_t right_start_us = micros();
   encoder_right = 1*odrive.GetPosition(0);//(int16_t)odrive.GetPosition(0);
+  odrive_right_read_us = micros() - right_start_us;
+
+  const uint32_t left_start_us = micros();
   encoder_left = 1*odrive.GetPosition(1);//(int16_t)odrive.GetPosition(1);
+  odrive_left_read_us = micros() - left_start_us;
 }
 
 
