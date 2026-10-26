@@ -6,6 +6,7 @@
 #include <Adafruit_INA219.h>
 #include <Adafruit_MPU6050.h>
 #include "checked_wire.h"
+#include "imu_calibration.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
@@ -31,6 +32,9 @@ ODriveArduino odrive(Serial2);
 Adafruit_INA219 ina219;
 Adafruit_MPU6050 mpu;
 CheckedWire sensorWire;
+ImuCalibration imuCalibration;
+// Setup owns the IMU before task creation; imuTask owns it afterwards.
+bool imuInitialized = false;
 
 struct SensorSnapshot {
   float encoder_left = 0;
@@ -289,50 +293,104 @@ void batteryTask(void *) {
   }
 }
 
-void runImuCycle() {
-  // Only this task uses mpu. Initialization/reconnection may take hundreds of
-  // milliseconds in the library; host replies and ODrive never wait on I2C.
-  static bool initialized = false;
-  static uint64_t retry_after_us = 0;
-  const uint64_t now_us = esp_timer_get_time();
-  if (!initialized && now_us < retry_after_us) return;
+bool initializeImu() {
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  sensorWire.clearError();
+  bool initialized = mpu.begin(IMU_ADDRESS, &sensorWire);
+  if (initialized) {
+    mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
+    mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+    mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+    mpu.setSampleRateDivisor(19); // 1 kHz / (1 + 19) = 50 Hz with DLPF enabled.
+  }
+  initialized = initialized && !sensorWire.failed();
+  xSemaphoreGive(i2cMutex);
+  return initialized;
+}
 
+bool readImuSample(float acceleration[3], float angular_velocity[3]) {
   sensors_event_t accel{}, gyro{}, temperature{};
   xSemaphoreTake(i2cMutex, portMAX_DELAY);
   sensorWire.clearError();
-  if (!initialized) {
-    initialized = mpu.begin(IMU_ADDRESS, &sensorWire);
-    if (initialized) {
-      mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
-      mpu.setGyroRange(MPU6050_RANGE_250_DEG);
-      mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
-      mpu.setSampleRateDivisor(19); // 1 kHz / (1 + 19) = 50 Hz with DLPF enabled.
+  const bool event_ok = mpu.getEvent(&accel, &gyro, &temperature);
+  const bool bus_ok = !sensorWire.failed();
+  xSemaphoreGive(i2cMutex);
+  if (!event_ok || !bus_ok) return false;
+  acceleration[0] = accel.acceleration.x;
+  acceleration[1] = accel.acceleration.y;
+  acceleration[2] = accel.acceleration.z;
+  angular_velocity[0] = gyro.gyro.x;
+  angular_velocity[1] = gyro.gyro.y;
+  angular_velocity[2] = gyro.gyro.z;
+  for (unsigned axis = 0; axis < 3; ++axis)
+    if (!std::isfinite(acceleration[axis]) || !std::isfinite(angular_velocity[axis]))
+      return false;
+  return true;
+}
+
+void calibrateImuAtStartup() {
+  imuInitialized = initializeImu();
+  if (!imuInitialized) {
+    Serial.println("MPU6050 calibration skipped: IMU initialization failed");
+    return;
+  }
+  Serial.println("MPU6050 startup calibration: keep robot still and level, sensor Z up");
+  delay(1000); // Let the sensor and low-pass filter settle; release I2C meanwhile.
+  const uint64_t deadline_us = uint64_t(esp_timer_get_time()) + 10000000;
+  for (unsigned n = 0; n < ImuCalibration::SAMPLE_COUNT; ++n) {
+    if (uint64_t(esp_timer_get_time()) >= deadline_us) {
+      Serial.println("MPU6050 calibration skipped: sampling timed out");
+      return;
     }
-    initialized = initialized && !sensorWire.failed();
-    xSemaphoreGive(i2cMutex);
+    float acceleration[3], angular_velocity[3];
+    if (!readImuSample(acceleration, angular_velocity)) {
+      imuInitialized = false; // The runtime task will retry initialization.
+      Serial.println("MPU6050 calibration skipped: invalid sample or I2C failure");
+      return;
+    }
+    if (uint64_t(esp_timer_get_time()) >= deadline_us) {
+      Serial.println("MPU6050 calibration skipped: sampling timed out");
+      return;
+    }
+    if (!imuCalibration.add(acceleration, angular_velocity)) {
+      Serial.println("MPU6050 calibration skipped: excessive rotation or invalid sample");
+      return;
+    }
+    delay(IMU_PERIOD_MS);
+  }
+  if (imuCalibration.finish())
+    Serial.println("MPU6050 calibration complete: accel and gyro offsets applied, gravity retained");
+  else
+    Serial.println("MPU6050 calibration skipped: unstable samples or unexpected level pose");
+}
+
+void runImuCycle() {
+  // Runtime initialization/reconnection never recalibrates a possibly moving robot.
+  static uint64_t retry_after_us = 0;
+  const uint64_t now_us = esp_timer_get_time();
+  if (!imuInitialized && now_us < retry_after_us) return;
+
+  float acceleration[3] = {}, angular_velocity[3] = {};
+  if (!imuInitialized) {
+    imuInitialized = initializeImu();
     retry_after_us = uint64_t(esp_timer_get_time()) + IMU_RETRY_MS * 1000;
-    if (initialized) return; // First sample on the next scheduled cycle.
+    if (imuInitialized) return; // First sample on the next scheduled cycle.
   } else {
-    const bool event_ok = mpu.getEvent(&accel, &gyro, &temperature);
-    initialized = event_ok && !sensorWire.failed() &&
-        std::isfinite(accel.acceleration.x) && std::isfinite(accel.acceleration.y) &&
-        std::isfinite(accel.acceleration.z) && std::isfinite(gyro.gyro.x) &&
-        std::isfinite(gyro.gyro.y) && std::isfinite(gyro.gyro.z);
-    xSemaphoreGive(i2cMutex);
-    if (!initialized)
+    imuInitialized = readImuSample(acceleration, angular_velocity);
+    if (imuInitialized)
+      imuCalibration.apply(acceleration, angular_velocity);
+    else
       retry_after_us = uint64_t(esp_timer_get_time()) + IMU_RETRY_MS * 1000;
   }
 
   const uint64_t completed_us = esp_timer_get_time();
   xSemaphoreTake(snapshotMutex, portMAX_DELAY);
-  snapshot.imu_valid = initialized;
-  if (initialized) {
-    snapshot.acceleration[0] = accel.acceleration.x;
-    snapshot.acceleration[1] = accel.acceleration.y;
-    snapshot.acceleration[2] = accel.acceleration.z;
-    snapshot.angular_velocity[0] = gyro.gyro.x;
-    snapshot.angular_velocity[1] = gyro.gyro.y;
-    snapshot.angular_velocity[2] = gyro.gyro.z;
+  snapshot.imu_valid = imuInitialized;
+  if (imuInitialized) {
+    for (unsigned axis = 0; axis < 3; ++axis) {
+      snapshot.acceleration[axis] = acceleration[axis];
+      snapshot.angular_velocity[axis] = angular_velocity[axis];
+    }
     snapshot.imu_time_us = completed_us;
     ++snapshot.imu_sequence;
   } else {
@@ -361,6 +419,7 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   pinMode(PIN_RESET_ODRIVE, OUTPUT);
   digitalWrite(LED_PIN, LOW);
+  digitalWrite(PIN_RESET_ODRIVE, LOW); // Hold reset throughout startup calibration.
   
   snapshotMutex = xSemaphoreCreateMutex();
   i2cMutex = xSemaphoreCreateMutex();
@@ -373,6 +432,7 @@ void setup() {
   const bool batteryReady = ina219.begin(&sensorWire);
   if (!batteryReady)
     Serial.println("INA219 initialization failed; continuing without battery monitoring");
+  calibrateImuAtStartup();
   if (xTaskCreate(hostTask, "host", 4096, nullptr, 2, nullptr) != pdPASS)
     startupFailed("Host task creation failed");
   if (batteryReady &&
