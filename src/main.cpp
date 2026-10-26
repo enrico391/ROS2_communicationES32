@@ -1,9 +1,11 @@
-/* ESP32 controller: host, ODrive and battery acquisition run independently. */
+/* ESP32 controller: host, ODrive, battery and IMU run independently. */
 #include <Arduino.h>
 #include "ODriveArduino.h"
 #include "controller_state.h"
 #include <Wire.h>
 #include <Adafruit_INA219.h>
+#include <Adafruit_MPU6050.h>
+#include "checked_wire.h"
 #include <freertos/FreeRTOS.h>
 #include <freertos/queue.h>
 #include <freertos/semphr.h>
@@ -15,11 +17,20 @@ constexpr int LED_PIN = 2;
 constexpr int PIN_RESET_ODRIVE = 15;
 constexpr uint32_t ODRIVE_PERIOD_MS = 20;
 constexpr uint32_t BATTERY_PERIOD_MS = 200;
+constexpr uint32_t IMU_PERIOD_MS = 20;
+constexpr uint32_t IMU_RETRY_MS = 1000;
+constexpr uint32_t IMU_MAX_AGE_US = 100000;
+#ifndef MPU6050_ADDRESS
+#define MPU6050_ADDRESS 0x68
+#endif
+constexpr uint8_t IMU_ADDRESS = MPU6050_ADDRESS;
 constexpr uint32_t ODRIVE_READ_TIMEOUT_MS = 12;
 constexpr size_t MAX_COMMAND_LENGTH = 200;
 
 ODriveArduino odrive(Serial2);
 Adafruit_INA219 ina219;
+Adafruit_MPU6050 mpu;
+CheckedWire sensorWire;
 
 struct SensorSnapshot {
   float encoder_left = 0;
@@ -38,10 +49,17 @@ struct SensorSnapshot {
   uint32_t read_failures = 0;
   bool wheels_valid = false;
   bool watchdog_active = true;
+  float acceleration[3] = {};
+  float angular_velocity[3] = {};
+  uint64_t imu_time_us = 0;
+  uint32_t imu_sequence = 0;
+  uint32_t imu_failures = 0;
+  bool imu_valid = false;
 };
 
 SensorSnapshot snapshot;
 SemaphoreHandle_t snapshotMutex;
+SemaphoreHandle_t i2cMutex;
 SemaphoreHandle_t odriveReady;
 QueueHandle_t motorQueue;
 
@@ -60,15 +78,23 @@ void processCommand(String command) {
     xSemaphoreGive(snapshotMutex);
     const uint32_t age_us = copy.wheels_valid
         ? saturatedMicroseconds(esp_timer_get_time() - copy.sample_time_us) : UINT32_MAX;
+    const uint32_t imu_age_us = copy.imu_sequence != 0
+        ? saturatedMicroseconds(esp_timer_get_time() - copy.imu_time_us) : UINT32_MAX;
     // First four values and the following two read timings retain their order.
     Serial.printf("%.2f %.2f %.2f %.2f "
                   "%" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " "
-                  "%" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %u\r\n",
+                  "%" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %u "
+                  "%.5f %.5f %.5f %.5f %.5f %.5f "
+                  "%" PRIu32 " %" PRIu32 " %u %" PRIu32 "\r\n",
                   copy.encoder_left, copy.encoder_right, copy.battery_voltage,
                   copy.battery_current_mA, copy.right_read_us, copy.left_read_us,
                   copy.task_period_us, copy.task_work_us, copy.motor_write_us,
                   age_us, copy.sample_sequence, copy.overruns, copy.read_failures,
-                  copy.sample_interval_us, unsigned(copy.watchdog_active));
+                  copy.sample_interval_us, unsigned(copy.watchdog_active),
+                  copy.acceleration[0], copy.acceleration[1], copy.acceleration[2],
+                  copy.angular_velocity[0], copy.angular_velocity[1], copy.angular_velocity[2],
+                  imu_age_us, copy.imu_sequence,
+                  unsigned(copy.imu_valid && imu_age_us <= IMU_MAX_AGE_US), copy.imu_failures);
   } else if (command.startsWith("m ")) {
     MotorCommand motor;
     if (parseMotorCommand(command.c_str(), millis(), motor) &&
@@ -233,14 +259,16 @@ void odriveTask(void *) {
 }
 
 void readBattery() {
-  // Battery task alone owns I2C and the filter. Average only collected samples
+  // The battery task owns the filter. Average only collected samples
   // so the existing 50-sample filter does not ramp from zero for 10 s at startup.
   static float readings[50] = {};
   static float total = 0;
   static size_t index = 0, count = 0;
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
   const float shunt_mV = ina219.getShuntVoltage_mV();
   const float voltage = ina219.getBusVoltage_V() + shunt_mV / 1000.0f;
   const float current_mA = ina219.getCurrent_mA();
+  xSemaphoreGive(i2cMutex);
   total -= readings[index];
   readings[index] = voltage;
   total += voltage;
@@ -261,6 +289,66 @@ void batteryTask(void *) {
   }
 }
 
+void runImuCycle() {
+  // Only this task uses mpu. Initialization/reconnection may take hundreds of
+  // milliseconds in the library; host replies and ODrive never wait on I2C.
+  static bool initialized = false;
+  static uint64_t retry_after_us = 0;
+  const uint64_t now_us = esp_timer_get_time();
+  if (!initialized && now_us < retry_after_us) return;
+
+  sensors_event_t accel{}, gyro{}, temperature{};
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  sensorWire.clearError();
+  if (!initialized) {
+    initialized = mpu.begin(IMU_ADDRESS, &sensorWire);
+    if (initialized) {
+      mpu.setAccelerometerRange(MPU6050_RANGE_2_G);
+      mpu.setGyroRange(MPU6050_RANGE_250_DEG);
+      mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+      mpu.setSampleRateDivisor(19); // 1 kHz / (1 + 19) = 50 Hz with DLPF enabled.
+    }
+    initialized = initialized && !sensorWire.failed();
+    xSemaphoreGive(i2cMutex);
+    retry_after_us = uint64_t(esp_timer_get_time()) + IMU_RETRY_MS * 1000;
+    if (initialized) return; // First sample on the next scheduled cycle.
+  } else {
+    const bool event_ok = mpu.getEvent(&accel, &gyro, &temperature);
+    initialized = event_ok && !sensorWire.failed() &&
+        std::isfinite(accel.acceleration.x) && std::isfinite(accel.acceleration.y) &&
+        std::isfinite(accel.acceleration.z) && std::isfinite(gyro.gyro.x) &&
+        std::isfinite(gyro.gyro.y) && std::isfinite(gyro.gyro.z);
+    xSemaphoreGive(i2cMutex);
+    if (!initialized)
+      retry_after_us = uint64_t(esp_timer_get_time()) + IMU_RETRY_MS * 1000;
+  }
+
+  const uint64_t completed_us = esp_timer_get_time();
+  xSemaphoreTake(snapshotMutex, portMAX_DELAY);
+  snapshot.imu_valid = initialized;
+  if (initialized) {
+    snapshot.acceleration[0] = accel.acceleration.x;
+    snapshot.acceleration[1] = accel.acceleration.y;
+    snapshot.acceleration[2] = accel.acceleration.z;
+    snapshot.angular_velocity[0] = gyro.gyro.x;
+    snapshot.angular_velocity[1] = gyro.gyro.y;
+    snapshot.angular_velocity[2] = gyro.gyro.z;
+    snapshot.imu_time_us = completed_us;
+    ++snapshot.imu_sequence;
+  } else {
+    ++snapshot.imu_failures;
+  }
+  xSemaphoreGive(snapshotMutex);
+}
+
+void imuTask(void *) {
+  TickType_t last_wake = xTaskGetTickCount();
+  for (;;) {
+    runImuCycle();
+    waitForNextPeriod(last_wake, pdMS_TO_TICKS(IMU_PERIOD_MS));
+  }
+}
+
 void startupFailed(const char *reason) {
   Serial.println(reason);
   // ODrive task is created last: no activation occurs on allocation failure.
@@ -274,17 +362,24 @@ void setup() {
   pinMode(PIN_RESET_ODRIVE, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   
-  if (!ina219.begin()) startupFailed("INA219 initialization failed");
-
   snapshotMutex = xSemaphoreCreateMutex();
+  i2cMutex = xSemaphoreCreateMutex();
   odriveReady = xSemaphoreCreateBinary();
   motorQueue = xQueueCreate(1, sizeof(MotorCommand));
-  if (!snapshotMutex || !odriveReady || !motorQueue)
+  if (!snapshotMutex || !i2cMutex || !odriveReady || !motorQueue)
     startupFailed("Controller allocation failed");
+  sensorWire.begin(21, 22);
+  sensorWire.setTimeOut(10);
+  const bool batteryReady = ina219.begin(&sensorWire);
+  if (!batteryReady)
+    Serial.println("INA219 initialization failed; continuing without battery monitoring");
   if (xTaskCreate(hostTask, "host", 4096, nullptr, 2, nullptr) != pdPASS)
     startupFailed("Host task creation failed");
-  if (xTaskCreate(batteryTask, "battery", 3072, nullptr, 1, nullptr) != pdPASS)
+  if (batteryReady &&
+      xTaskCreate(batteryTask, "battery", 3072, nullptr, 1, nullptr) != pdPASS)
     startupFailed("Battery task creation failed");
+  if (xTaskCreate(imuTask, "imu", 4096, nullptr, 1, nullptr) != pdPASS)
+    startupFailed("IMU task creation failed");
   if (xTaskCreate(odriveTask, "odrive", 4096, nullptr, 3, nullptr) != pdPASS)
     startupFailed("ODrive task creation failed");
 }
