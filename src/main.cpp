@@ -3,7 +3,7 @@
 #include "ODriveArduino.h"
 #include "controller_state.h"
 #include <Wire.h>
-#include <Adafruit_INA219.h>
+#include "ina226.h"
 #include <Adafruit_MPU6050.h>
 #include "checked_wire.h"
 #include "imu_calibration.h"
@@ -29,9 +29,9 @@ constexpr uint32_t ODRIVE_READ_TIMEOUT_MS = 12;
 constexpr size_t MAX_COMMAND_LENGTH = 200;
 
 ODriveArduino odrive(Serial2);
-Adafruit_INA219 ina219;
 Adafruit_MPU6050 mpu;
 CheckedWire sensorWire;
+Ina226<CheckedWire> ina226(sensorWire, INA226_I2C_ADDRESS, INA226_SHUNT_RESISTANCE_OHMS);
 ImuCalibration imuCalibration;
 // Setup owns the IMU before task creation; imuTask owns it afterwards.
 bool imuInitialized = false;
@@ -269,10 +269,14 @@ void readBattery() {
   static float total = 0;
   static size_t index = 0, count = 0;
   xSemaphoreTake(i2cMutex, portMAX_DELAY);
-  const float shunt_mV = ina219.getShuntVoltage_mV();
-  const float voltage = ina219.getBusVoltage_V() + shunt_mV / 1000.0f;
-  const float current_mA = ina219.getCurrent_mA();
+  sensorWire.clearError();
+  Ina226Sample sample{};
+  const Ina226Status status = ina226.read(sample);
+  const bool valid = status == Ina226Status::Ok && !sensorWire.failed();
   xSemaphoreGive(i2cMutex);
+  if (!valid) return; // Keep the last good snapshot and filter on invalid reads.
+  // Retain the existing supply-voltage estimate (VBUS connected to IN-).
+  const float voltage = sample.bus_V + sample.shunt_mV / 1000.0f;
   total -= readings[index];
   readings[index] = voltage;
   total += voltage;
@@ -281,7 +285,10 @@ void readBattery() {
 
   xSemaphoreTake(snapshotMutex, portMAX_DELAY);
   snapshot.battery_voltage = total / count;
-  snapshot.battery_current_mA = current_mA;
+  // used a minus sign in current because when the 
+  // charger is connected, the current is negative,
+  // so to make it more intuitive, we report the current as positive when charging
+  snapshot.battery_current_mA = - sample.current_mA; 
   xSemaphoreGive(snapshotMutex);
 }
 
@@ -429,9 +436,12 @@ void setup() {
     startupFailed("Controller allocation failed");
   sensorWire.begin(21, 22);
   sensorWire.setTimeOut(10);
-  const bool batteryReady = ina219.begin(&sensorWire);
+  xSemaphoreTake(i2cMutex, portMAX_DELAY);
+  sensorWire.clearError();
+  const bool batteryReady = ina226.begin() == Ina226Status::Ok && !sensorWire.failed();
+  xSemaphoreGive(i2cMutex);
   if (!batteryReady)
-    Serial.println("INA219 initialization failed; continuing without battery monitoring");
+    Serial.println("INA226 initialization failed; continuing without battery monitoring");
   calibrateImuAtStartup();
   if (xTaskCreate(hostTask, "host", 4096, nullptr, 2, nullptr) != pdPASS)
     startupFailed("Host task creation failed");
