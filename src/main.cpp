@@ -85,7 +85,7 @@ void processCommand(String command) {
     const uint32_t imu_age_us = copy.imu_sequence != 0
         ? saturatedMicroseconds(esp_timer_get_time() - copy.imu_time_us) : UINT32_MAX;
     // First four values and the following two read timings retain their order.
-    Serial.printf("%.2f %.2f %.2f %.2f "
+    Serial.printf("%.6f %.6f %.2f %.2f "
                   "%" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " "
                   "%" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %u "
                   "%.5f %.5f %.5f %.5f %.5f %.5f "
