@@ -41,21 +41,12 @@ struct SensorSnapshot {
   float encoder_right = 0;
   float battery_voltage = 0;
   float battery_current_mA = 0;
-  uint32_t right_read_us = 0;
-  uint32_t left_read_us = 0;
-  uint32_t task_period_us = 0;
-  uint32_t task_work_us = 0;
-  uint32_t motor_write_us = 0;
-  uint64_t sample_time_us = 0; // Completion of the older (right) wheel read.
-  uint32_t sample_interval_us = 0;
   uint32_t sample_sequence = 0;
-  uint32_t overruns = 0;
   uint32_t read_failures = 0;
-  bool wheels_valid = false;
   bool watchdog_active = true;
   float acceleration[3] = {};
   float angular_velocity[3] = {};
-  uint64_t imu_time_us = 0;
+  uint64_t imu_time_us = 0; // Used internally to reject stale IMU data.
   uint32_t imu_sequence = 0;
   uint32_t imu_failures = 0;
   bool imu_valid = false;
@@ -67,10 +58,6 @@ SemaphoreHandle_t i2cMutex;
 SemaphoreHandle_t odriveReady;
 QueueHandle_t motorQueue;
 
-uint32_t saturatedMicroseconds(uint64_t elapsed_us) {
-  return elapsed_us >= UINT32_MAX ? UINT32_MAX : uint32_t(elapsed_us);
-}
-
 void processCommand(String command) {
   command.trim();
   digitalWrite(LED_PIN, HIGH);
@@ -80,25 +67,19 @@ void processCommand(String command) {
     xSemaphoreTake(snapshotMutex, portMAX_DELAY);
     const SensorSnapshot copy = snapshot;
     xSemaphoreGive(snapshotMutex);
-    const uint32_t age_us = copy.wheels_valid
-        ? saturatedMicroseconds(esp_timer_get_time() - copy.sample_time_us) : UINT32_MAX;
-    const uint32_t imu_age_us = copy.imu_sequence != 0
-        ? saturatedMicroseconds(esp_timer_get_time() - copy.imu_time_us) : UINT32_MAX;
-    // First four values and the following two read timings retain their order.
+    const bool imu_fresh = copy.imu_valid &&
+        uint64_t(esp_timer_get_time()) - copy.imu_time_us <= IMU_MAX_AGE_US;
+    // Preserve the original protocol layout; debug timing fields are zero.
     Serial.printf("%.6f %.6f %.2f %.2f "
-                  "%" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " "
-                  "%" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %" PRIu32 " %u "
+                  "0 0 0 0 0 0 %" PRIu32 " 0 %" PRIu32 " 0 %u "
                   "%.5f %.5f %.5f %.5f %.5f %.5f "
-                  "%" PRIu32 " %" PRIu32 " %u %" PRIu32 "\r\n",
+                  "0 %" PRIu32 " %u %" PRIu32 "\r\n",
                   copy.encoder_left, copy.encoder_right, copy.battery_voltage,
-                  copy.battery_current_mA, copy.right_read_us, copy.left_read_us,
-                  copy.task_period_us, copy.task_work_us, copy.motor_write_us,
-                  age_us, copy.sample_sequence, copy.overruns, copy.read_failures,
-                  copy.sample_interval_us, unsigned(copy.watchdog_active),
+                  copy.battery_current_mA, copy.sample_sequence, copy.read_failures,
+                  unsigned(copy.watchdog_active),
                   copy.acceleration[0], copy.acceleration[1], copy.acceleration[2],
                   copy.angular_velocity[0], copy.angular_velocity[1], copy.angular_velocity[2],
-                  imu_age_us, copy.imu_sequence,
-                  unsigned(copy.imu_valid && imu_age_us <= IMU_MAX_AGE_US), copy.imu_failures);
+                  copy.imu_sequence, unsigned(imu_fresh), copy.imu_failures);
   } else if (command.startsWith("m ")) {
     MotorCommand motor;
     if (parseMotorCommand(command.c_str(), millis(), motor) &&
@@ -161,26 +142,16 @@ void activateOdrive() {
 
 void runOdriveCycle() {
   static MotorCommandState motors;
-  static uint32_t previous_start_us = 0;
-  static bool have_previous_start = false;
   static bool resync = false;
   static uint32_t quiet_since_ms = 0;
-
-  const uint32_t started_us = micros();
-  const uint32_t period_us = have_previous_start
-      ? uint32_t(started_us - previous_start_us) : 0;
-  previous_start_us = started_us;
-  have_previous_start = true;
 
   MotorCommand queued;
   if (xQueueReceive(motorQueue, &queued, 0) == pdTRUE) motors.accept(queued);
   const uint32_t now_ms = millis();
   const MotorCommand target = motors.current(now_ms);
-  const uint32_t motor_start_us = micros();
   odrive.SetVelocity(0, target.right); // Axis 0 is right, axis 1 is left.
   odrive.SetVelocity(1, target.left);
-  Serial2.flush(); // Include physical TX completion in motor-write timing.
-  const uint32_t motor_us = micros() - motor_start_us;
+  Serial2.flush(); // Finish motor TX before starting position-read timeouts.
 
   // After a bad/partial reply, discard late bytes until the link has been quiet
   // for a whole period. An old reply must not become the next wheel's sample.
@@ -194,19 +165,12 @@ void runOdriveCycle() {
   }
 
   float right = 0, left = 0;
-  uint32_t right_us = 0, left_us = 0;
-  uint64_t right_done_us = 0;
   bool complete = false;
   bool failed = false;
   if (!resync) {
-    const uint32_t right_start_us = micros();
     const bool right_ok = odrive.GetPosition(0, right, ODRIVE_READ_TIMEOUT_MS);
-    right_us = micros() - right_start_us;
-    right_done_us = esp_timer_get_time();
     if (right_ok) {
-      const uint32_t left_start_us = micros();
       complete = odrive.GetPosition(1, left, ODRIVE_READ_TIMEOUT_MS);
-      left_us = micros() - left_start_us;
     }
     if (!complete) {
       failed = true;
@@ -215,25 +179,14 @@ void runOdriveCycle() {
     }
   }
 
-  const uint32_t work_us = micros() - started_us;
   xSemaphoreTake(snapshotMutex, portMAX_DELAY);
   if (complete) {
-    snapshot.sample_interval_us = snapshot.wheels_valid
-        ? saturatedMicroseconds(right_done_us - snapshot.sample_time_us) : 0;
     snapshot.encoder_right = right;
     snapshot.encoder_left = left;
-    snapshot.sample_time_us = right_done_us;
     ++snapshot.sample_sequence;
-    snapshot.wheels_valid = true;
   }
-  snapshot.right_read_us = right_us;
-  snapshot.left_read_us = left_us;
-  snapshot.task_period_us = period_us;
-  snapshot.task_work_us = work_us;
-  snapshot.motor_write_us = motor_us;
   snapshot.watchdog_active = motors.expired(now_ms);
   if (failed) ++snapshot.read_failures;
-  if (work_us > ODRIVE_PERIOD_MS * 1000) ++snapshot.overruns;
   xSemaphoreGive(snapshotMutex);
 }
 
